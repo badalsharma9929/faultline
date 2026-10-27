@@ -1,0 +1,516 @@
+[
+ {
+  "id": "uber",
+  "company": "Uber",
+  "product": "Ride matching & dispatch (driver location ingest + rider request matching)",
+  "summary": "Driver apps stream their GPS position every few seconds into a geospatial index sharded by S2 cells, while rider requests flow through a demand service into DISCO, the dispatch optimizer. DISCO picks drivers by road-network ETA rather than straight-line distance, and once a trip is offered and accepted, a push platform keeps both parties' apps in sync.",
+  "scale": { "peak_rps": 1000000, "notes": "The geospatial index was designed for about 1M location writes/sec, with reads at several times that (Uber's 2015 QCon talk, as summarised by HighScalability). Ride requests are a small fraction of this, estimated at a few thousand per second. The push layer handled over 250k messages/sec across more than 1.5M connections. All replica counts are estimates." },
+  "latency_target_ms": 500,
+  "components": [
+   { "id": "rider-driver-app", "type": "User", "name": "Rider & driver mobile apps", "replicas": 1, "notes": "Drivers send a location update about every 4 s; riders submit trip requests" },
+   { "id": "edge-lb", "type": "LoadBalancer", "name": "Edge load balancer", "replicas": 20, "notes": "Terminates client connections in front of the gateway (estimate)" },
+   { "id": "api-gateway", "type": "APIGateway", "name": "Uber API gateway", "replicas": 200, "notes": "Serves mobile pull APIs and produces push payloads" },
+   { "id": "demand-svc", "type": "Service", "name": "Demand service", "replicas": 100, "notes": "Tracks rider orders and requirements such as seats or vehicle type" },
+   { "id": "supply-svc", "type": "Service", "name": "Supply service", "replicas": 300, "notes": "Driver state machine, capabilities and seat allocation; forwards location updates" },
+   { "id": "disco", "type": "Service", "name": "DISCO dispatch (Node.js + Ringpop)", "replicas": 300, "notes": "Matches supply with demand and is sharded by a gossip-based consistent-hash ring; some state is kept in Riak" },
+   { "id": "geo-index", "type": "SearchIndex", "name": "S2-cell geospatial index", "replicas": 400, "notes": "In-memory index keyed by level-12 S2 cell IDs; hundreds of processes" },
+   { "id": "eta-svc", "type": "Service", "name": "Routing / ETA service", "replicas": 150, "notes": "Ranks candidate drivers by road-network travel time" },
+   { "id": "fireball", "type": "Worker", "name": "Fireball", "replicas": 50, "notes": "Listens for trip-state events and decides who gets pushed what" },
+   { "id": "streamgate", "type": "WebSocketServer", "name": "Streamgate push delivery (Netty)", "replicas": 200, "notes": "Holds persistent streaming connections to apps and is routed by a Helix-aware proxy" },
+   { "id": "push-store", "type": "Database", "name": "Cassandra (with Redis capacity cache)", "replicas": 30, "notes": "Durable cross-region store for push messages" }
+  ],
+  "edges": [
+   { "source": "rider-driver-app", "target": "edge-lb", "type": "sync" },
+   { "source": "edge-lb", "target": "api-gateway", "type": "sync" },
+   { "source": "api-gateway", "target": "demand-svc", "type": "sync" },
+   { "source": "api-gateway", "target": "supply-svc", "type": "sync" },
+   { "source": "supply-svc", "target": "geo-index", "type": "sync" },
+   { "source": "demand-svc", "target": "disco", "type": "sync" },
+   { "source": "disco", "target": "geo-index", "type": "sync" },
+   { "source": "disco", "target": "eta-svc", "type": "sync" },
+   { "source": "disco", "target": "fireball", "type": "async" },
+   { "source": "fireball", "target": "streamgate", "type": "async" },
+   { "source": "streamgate", "target": "push-store", "type": "sync" }
+  ],
+  "cache_hit_ratio": 0,
+  "key_ideas": [
+   "S2 cell IDs serve as shard keys, so a nearby-driver lookup only touches a few shards",
+   "Ringpop puts consistent hashing and gossip membership inside each Node.js process, so there is no central router",
+   "Drivers are ranked by ETA on real roads, not crow-flies distance",
+   "Pushing state over long-lived connections replaced polling, which had been about 80% of gateway calls",
+   "Phones hold an encrypted state digest so trips survive a data-centre failover"
+  ],
+  "sources": [
+   { "title": "How Uber Scales Their Real-Time Market Platform (HighScalability, from QCon 2015)", "url": "http://highscalability.com/blog/2015/9/14/how-uber-scales-their-real-time-market-platform.html" },
+   { "title": "Uber's Real-Time Push Platform (Uber Engineering)", "url": "https://www.uber.com/blog/real-time-push-platform/" },
+   { "title": "Scaling Uber's Real-time Market Platform (InfoQ talk page)", "url": "https://www.infoq.com/presentations/uber-market-platform/" }
+  ]
+ },
+ {
+  "id": "netflix",
+  "company": "Netflix",
+  "product": "Video playback start via Open Connect CDN",
+  "summary": "Everything before the play button runs on AWS. When a member presses play, the playback services check entitlement and licensing, choose stream assets, and ask a steering service which Open Connect Appliances should serve the session. The video bytes then come from OCAs, which are usually embedded inside the viewer's ISP and filled ahead of demand.",
+  "scale": { "peak_rps": 10000, "notes": "Estimate for play-start (control-plane) requests. In 2016 Netflix reported about 125M viewing hours a day and tens of Tbps at peak, all delivered by Open Connect. Chunk requests to OCAs are orders of magnitude higher than play-starts. Replica counts are estimates." },
+  "latency_target_ms": 1000,
+  "components": [
+   { "id": "viewer", "type": "User", "name": "Netflix client device", "replicas": 1, "notes": "Requests playback, then streams segments from the OCA URLs it is given" },
+   { "id": "aws-elb", "type": "LoadBalancer", "name": "AWS Elastic Load Balancer", "replicas": 30, "notes": "Regional entry to the AWS control plane (estimate)" },
+   { "id": "zuul", "type": "APIGateway", "name": "Zuul edge gateway", "replicas": 300, "notes": "Netflix's routing and filtering edge service (general knowledge, not from cited pages)" },
+   { "id": "playback-svc", "type": "Service", "name": "Playback application services", "replicas": 500, "notes": "Checks authorisation and licensing, then selects assets for the device and network" },
+   { "id": "evcache", "type": "Cache", "name": "EVCache", "replicas": 200, "notes": "Memcached-based cache in front of member and title data (general knowledge, estimate)" },
+   { "id": "cassandra", "type": "Database", "name": "Cassandra", "replicas": 100, "notes": "Member and viewing state store (general knowledge, estimate)" },
+   { "id": "steering", "type": "Service", "name": "Steering service", "replicas": 100, "notes": "Picks the best OCAs by prefix match, AS path, MED and geography, then builds URLs" },
+   { "id": "cache-control", "type": "Service", "name": "Cache control service", "replicas": 30, "notes": "Collects OCA health, routability and content availability" },
+   { "id": "open-connect", "type": "CDN", "name": "Open Connect Appliances (OCAs)", "replicas": 1000, "notes": "Embedded in ISPs and at IXPs; ~1,000 locations in 2016 (appliance count higher)" },
+   { "id": "origin", "type": "BlobStorage", "name": "Transcoded asset repository / Netflix content sites", "replicas": 10, "notes": "Fill source; also serves long-tail misses over peering or transit" }
+  ],
+  "edges": [
+   { "source": "viewer", "target": "aws-elb", "type": "sync" },
+   { "source": "aws-elb", "target": "zuul", "type": "sync" },
+   { "source": "zuul", "target": "playback-svc", "type": "sync" },
+   { "source": "playback-svc", "target": "evcache", "type": "sync" },
+   { "source": "evcache", "target": "cassandra", "type": "sync" },
+   { "source": "playback-svc", "target": "steering", "type": "sync" },
+   { "source": "steering", "target": "cache-control", "type": "sync" },
+   { "source": "viewer", "target": "open-connect", "type": "sync" },
+   { "source": "open-connect", "target": "origin", "type": "sync" },
+   { "source": "open-connect", "target": "cache-control", "type": "async" }
+  ],
+  "cache_hit_ratio": 0.95,
+  "key_ideas": [
+   "Split control plane (AWS) from data plane (Open Connect), so video bytes never touch AWS",
+   "Popularity models place content on OCAs during off-peak hours, so peak traffic is mostly cache hits",
+   "Appliances are embedded inside ISPs, and about 90-95% of traffic flows over direct ISP connections",
+   "Steering uses BGP signals to send each client to the closest healthy OCA that holds the file"
+  ],
+  "sources": [
+   { "title": "How Netflix works with ISPs around the globe (Netflix)", "url": "https://about.netflix.com/en/news/how-netflix-works-with-isps-around-the-globe-to-deliver-a-great-viewing-experience" },
+   { "title": "Netflix content distribution through Open Connect (APNIC blog, by Netflix)", "url": "https://blog.apnic.net/2018/06/20/netflix-content-distribution-through-open-connect/" },
+   { "title": "Netflix Open Connect", "url": "https://openconnect.netflix.com/en/" }
+  ]
+ },
+ {
+  "id": "whatsapp",
+  "company": "WhatsApp",
+  "product": "1:1 message send and delivery",
+  "summary": "Each phone keeps a persistent connection to an Erlang chat server, a heavily modified ejabberd fork on FreeBSD, where every connection is a lightweight process. The sending node looks up where the recipient is connected and forwards the message across the Erlang mesh. If the recipient is offline, the message is held until they reconnect and a push notification wakes them. Media goes separately to HTTP upload servers, and the chat message carries only a link and a thumbnail.",
+  "scale": { "peak_rps": 2000000, "notes": "Estimate. In 2014 WhatsApp handled 50B messages/day, about 580k/s on average. Later public claims of 100B+/day give over 1.1M/s average, so the peak is estimated at about 2x that. One server held 2M+ connections (2012), and the fleet had 'hundreds of nodes' and over 8,000 cores in 2014. Replica counts are estimates." },
+  "latency_target_ms": 200,
+  "components": [
+   { "id": "phone", "type": "User", "name": "WhatsApp client", "replicas": 1, "notes": "Persistent encrypted socket; history is stored on the device" },
+   { "id": "edge-lb", "type": "LoadBalancer", "name": "Connection load balancer", "replicas": 20, "notes": "Spreads long-lived sockets across chat servers (estimate)" },
+   { "id": "chat-node", "type": "WebSocketServer", "name": "Erlang chat servers (ejabberd fork, FreeBSD)", "replicas": 500, "notes": "One Erlang process per connection; 2M+ sockets per box" },
+   { "id": "session-db", "type": "Database", "name": "Mnesia", "replicas": 50, "notes": "In-memory replicated tables for session and routing state" },
+   { "id": "router", "type": "Service", "name": "Erlang backend chat mesh", "replicas": 200, "notes": "Forwards the message to the node that holds the recipient's session" },
+   { "id": "recipient-session", "type": "WebSocketServer", "name": "Recipient's chat server", "replicas": 500, "notes": "Delivers the message to the online recipient and relays receipts" },
+   { "id": "offline-queue", "type": "Queue", "name": "Offline message store", "replicas": 50, "notes": "Holds messages in memory until the recipient reconnects, then deletes them" },
+   { "id": "push-worker", "type": "Worker", "name": "Push notification dispatcher", "replicas": 30, "notes": "Wakes offline devices (estimate)" },
+   { "id": "push-api", "type": "ThirdPartyAPI", "name": "Google push / APNs", "replicas": 1, "notes": "Platform push services" },
+   { "id": "media-server", "type": "Server", "name": "Media HTTP upload servers", "replicas": 100, "notes": "Receive images, audio and video; return a link for the chat message" },
+   { "id": "media-store", "type": "BlobStorage", "name": "Media blob storage", "replicas": 20, "notes": "Holds uploaded media until downloaded (estimate)" }
+  ],
+  "edges": [
+   { "source": "phone", "target": "edge-lb", "type": "sync" },
+   { "source": "edge-lb", "target": "chat-node", "type": "sync" },
+   { "source": "chat-node", "target": "session-db", "type": "sync" },
+   { "source": "chat-node", "target": "router", "type": "sync" },
+   { "source": "router", "target": "recipient-session", "type": "sync" },
+   { "source": "router", "target": "offline-queue", "type": "async" },
+   { "source": "offline-queue", "target": "push-worker", "type": "async" },
+   { "source": "push-worker", "target": "push-api", "type": "async" },
+   { "source": "phone", "target": "media-server", "type": "sync" },
+   { "source": "media-server", "target": "media-store", "type": "sync" }
+  ],
+  "cache_hit_ratio": 0,
+  "key_ideas": [
+   "Erlang's cheap processes allow millions of concurrent sockets per server",
+   "Few, very large tuned FreeBSD boxes instead of a huge fleet, so the team stayed tiny",
+   "Messages are stored only until delivered; history lives on the phone",
+   "Media goes out of band over HTTP; the message carries only a link plus a thumbnail",
+   "Parallelised Mnesia replication and patched BEAM bottlenecks to keep up with volume"
+  ],
+  "sources": [
+   { "title": "The WhatsApp Architecture Facebook Bought For $19 Billion (HighScalability)", "url": "http://highscalability.com/blog/2014/2/26/the-whatsapp-architecture-facebook-bought-for-19-billion.html" },
+   { "title": "1 million is so 2011 (WhatsApp blog)", "url": "https://blog.whatsapp.com/1-million-is-so-2011" }
+  ]
+ },
+ {
+  "id": "instagram",
+  "company": "Instagram",
+  "product": "Home feed load (feed API + photo fetch)",
+  "summary": "Instagram's web tier is a large Django/Python fleet running under uWSGI. Feeds, stories and activity live in Cassandra; users, media and follow relationships live in PostgreSQL behind memcache. When someone posts, async Celery workers fed by RabbitMQ do the fan-out work. Images are fetched separately from a CDN.",
+  "scale": { "peak_rps": 500000, "notes": "Estimate: about 1B daily users times ~20 feed fetches a day gives ~230k/s average, so the peak is estimated at about 2x. The 2016 QCon deck reported 300M daily users, 95M uploads/day and memcache at 'millions of reads/writes per second'. Replica counts are estimates." },
+  "latency_target_ms": 300,
+  "components": [
+   { "id": "user", "type": "User", "name": "Instagram app", "replicas": 1, "notes": "Requests feed JSON, then loads images" },
+   { "id": "cdn", "type": "CDN", "name": "Photo CDN (CloudFront early on, later Facebook CDN)", "replicas": 200, "notes": "Serves image and video bytes" },
+   { "id": "photo-store", "type": "BlobStorage", "name": "Photo/video storage (S3 early on)", "replicas": 10, "notes": "Origin for media" },
+   { "id": "lb", "type": "LoadBalancer", "name": "Load balancer + nginx", "replicas": 30, "notes": "TLS termination and routing to the app tier" },
+   { "id": "django", "type": "Server", "name": "Django on uWSGI", "replicas": 2000, "notes": "Stateless Python web tier that builds the feed response" },
+   { "id": "memcache", "type": "Cache", "name": "memcache", "replicas": 300, "notes": "Look-aside cache; kept within a region because cross-region calls are too slow" },
+   { "id": "postgres", "type": "Database", "name": "PostgreSQL", "replicas": 100, "notes": "Users, media and friendships; one master with read replicas per region" },
+   { "id": "cassandra", "type": "Database", "name": "Cassandra", "replicas": 300, "notes": "Feeds, stories and activity; masterless and multi-DC" },
+   { "id": "rabbitmq", "type": "Queue", "name": "RabbitMQ", "replicas": 20, "notes": "Async task broker (replaced Gearman)" },
+   { "id": "celery", "type": "Worker", "name": "Celery workers", "replicas": 500, "notes": "Feed fan-out, notifications and other deferred work" }
+  ],
+  "edges": [
+   { "source": "user", "target": "cdn", "type": "sync" },
+   { "source": "cdn", "target": "photo-store", "type": "sync" },
+   { "source": "user", "target": "lb", "type": "sync" },
+   { "source": "lb", "target": "django", "type": "sync" },
+   { "source": "django", "target": "memcache", "type": "sync" },
+   { "source": "memcache", "target": "postgres", "type": "sync" },
+   { "source": "django", "target": "cassandra", "type": "sync" },
+   { "source": "django", "target": "rabbitmq", "type": "async" },
+   { "source": "rabbitmq", "target": "celery", "type": "async" },
+   { "source": "celery", "target": "cassandra", "type": "async" }
+  ],
+  "cache_hit_ratio": 0.9,
+  "key_ideas": [
+   "Storage must stay consistent across data centres, while compute scales freely with traffic",
+   "PostgreSQL has one master with per-region read replicas: reads stay local, writes cross regions",
+   "Cassandra's tunable consistency suits feed and activity data across data centres",
+   "Heavy work such as fan-out is pushed onto queues so the request path stays thin",
+   "The Python web tier is kept stateless, so it scales by adding uWSGI boxes"
+  ],
+  "sources": [
+   { "title": "Scaling Instagram Infrastructure, QCon SF 2016 slides (Lisa Guo)", "url": "https://qconsf.com/sf2016/system/files/presentation-slides/scaling_instagram_infrastructure_-_qcon_sf_2016.pdf" },
+   { "title": "Instagram Architecture: 14 Million Users, Terabytes of Photos (HighScalability)", "url": "http://highscalability.com/blog/2011/12/6/instagram-architecture-14-million-users-terabytes-of-photos.html" }
+  ]
+ },
+ {
+  "id": "youtube",
+  "company": "YouTube",
+  "product": "Video watch: metadata page + video bytes from edge cache",
+  "summary": "A watch request has two halves. Front ends assemble the page and player config from cached objects, video metadata held in Vitess-sharded MySQL, and thumbnails in Bigtable. DNS then steers the player to a Google Global Cache node, often inside the viewer's ISP, which serves popular videos locally and fetches misses from Google's core.",
+  "scale": { "peak_rps": 100000, "notes": "Estimate for watch/playback-start requests. Early figures were 1B views/day (~11.6k/s). Today's volume is several times higher, so the estimate is ~5B views/day (~58k/s average) with about a 2x peak. Segment fetches to the CDN are far higher. Replica counts are estimates." },
+  "latency_target_ms": 200,
+  "components": [
+   { "id": "viewer", "type": "User", "name": "YouTube player", "replicas": 1, "notes": "Loads the watch page, then pulls video from a cache node" },
+   { "id": "gfe", "type": "LoadBalancer", "name": "Google front-end load balancers", "replicas": 100, "notes": "NetScaler early on; Google edge LB today (estimate)" },
+   { "id": "watch-frontend", "type": "Server", "name": "Watch-page / player API servers", "replicas": 2000, "notes": "Originally Python app servers; builds page and player config" },
+   { "id": "memcache", "type": "Cache", "name": "In-memory object caches", "replicas": 300, "notes": "Cached rendered blocks, Python objects and DB rows" },
+   { "id": "vitess", "type": "ReverseProxy", "name": "Vitess (vtgate)", "replicas": 200, "notes": "Routes queries to the right MySQL shard so the app doesn't have to" },
+   { "id": "mysql", "type": "Database", "name": "MySQL shards", "replicas": 500, "notes": "Users, video metadata, tags and descriptions" },
+   { "id": "bigtable", "type": "Database", "name": "Bigtable", "replicas": 100, "notes": "Thumbnail storage, avoiding millions of small files" },
+   { "id": "ggc", "type": "CDN", "name": "Google Global Cache / edge caches", "replicas": 3000, "notes": "Caches inside ISPs; serves 70-90% of cacheable traffic" },
+   { "id": "origin", "type": "BlobStorage", "name": "Core video storage (Google data centres)", "replicas": 20, "notes": "Serves long-tail videos and cache fills" }
+  ],
+  "edges": [
+   { "source": "viewer", "target": "gfe", "type": "sync" },
+   { "source": "gfe", "target": "watch-frontend", "type": "sync" },
+   { "source": "watch-frontend", "target": "memcache", "type": "sync" },
+   { "source": "memcache", "target": "vitess", "type": "sync" },
+   { "source": "vitess", "target": "mysql", "type": "sync" },
+   { "source": "watch-frontend", "target": "bigtable", "type": "sync" },
+   { "source": "viewer", "target": "ggc", "type": "sync" },
+   { "source": "ggc", "target": "origin", "type": "sync" }
+  ],
+  "cache_hit_ratio": 0.8,
+  "key_ideas": [
+   "Separate the dynamic page path from the video byte path",
+   "Cache nodes inside ISPs absorb most popular-video traffic; the long tail goes back to core",
+   "Vitess moved shard routing out of app code into a proxy layer in front of MySQL",
+   "Thumbnails went to Bigtable because small-file disk I/O was the bottleneck",
+   "Many cache layers (row, object, pre-rendered fragment) keep page builds cheap"
+  ],
+  "sources": [
+   { "title": "YouTube Architecture (HighScalability)", "url": "http://highscalability.com/youtube-architecture/" },
+   { "title": "Vitess history", "url": "https://vitess.io/docs/overview/history/" },
+   { "title": "Introduction to Google Global Cache (Google)", "url": "https://support.google.com/interconnect/answer/9058809?hl=en" }
+  ]
+ },
+ {
+  "id": "twitter",
+  "company": "Twitter/X",
+  "product": "Home timeline read",
+  "summary": "Home timelines are precomputed when a tweet is written: a fan-out service pushes tweet IDs into each follower's timeline list in a replicated Redis cluster. A read then just fetches that list and hydrates the IDs through the tweet and user services, which sit behind memcache, so reads cost tens of milliseconds.",
+  "scale": { "peak_rps": 300000, "notes": "About 300K QPS of timeline reads (2013 figures, HighScalability). Writes ran ~5-7k tweets/s on average, with a 143,199 tweets/s one-second record in 2013 (InfoQ). Replica counts are estimates." },
+  "latency_target_ms": 400,
+  "components": [
+   { "id": "user", "type": "User", "name": "Twitter client", "replicas": 1, "notes": "Requests the home timeline" },
+   { "id": "lb", "type": "LoadBalancer", "name": "Hardware/edge load balancers", "replicas": 20, "notes": "Front door (estimate)" },
+   { "id": "tfe", "type": "ReverseProxy", "name": "Twitter Front End (TFE)", "replicas": 200, "notes": "Edge proxy routing to Finagle services" },
+   { "id": "timeline-svc", "type": "Service", "name": "Timeline Service (Finagle/JVM)", "replicas": 500, "notes": "Reads the precomputed list from the fastest of 3 Redis replicas; p50 ~5 ms, p99 ~100 ms" },
+   { "id": "redis-timelines", "type": "Cache", "name": "Redis timeline cluster", "replicas": 1000, "notes": "800-entry ID lists per active user, stored on 3 machines" },
+   { "id": "gizzard-timelines", "type": "Database", "name": "Gizzard/MySQL timeline store", "replicas": 100, "notes": "Disk-backed copy used to rebuild timelines on a cache miss" },
+   { "id": "tweetypie", "type": "Service", "name": "Tweetypie (tweet service)", "replicas": 300, "notes": "Hydrates tweet IDs into tweet bodies" },
+   { "id": "tweet-cache", "type": "Cache", "name": "memcache (tweets)", "replicas": 300, "notes": "Holds roughly the last ~6 weeks of tweets" },
+   { "id": "tbird", "type": "Database", "name": "T-bird (MySQL tweet store, later Manhattan)", "replicas": 200, "notes": "Full tweet corpus" },
+   { "id": "gizmoduck", "type": "Service", "name": "Gizmoduck (user service)", "replicas": 200, "notes": "Hydrates author data, backed by its own memcache" }
+  ],
+  "edges": [
+   { "source": "user", "target": "lb", "type": "sync" },
+   { "source": "lb", "target": "tfe", "type": "sync" },
+   { "source": "tfe", "target": "timeline-svc", "type": "sync" },
+   { "source": "timeline-svc", "target": "redis-timelines", "type": "sync" },
+   { "source": "redis-timelines", "target": "gizzard-timelines", "type": "sync" },
+   { "source": "timeline-svc", "target": "tweetypie", "type": "sync" },
+   { "source": "tweetypie", "target": "tweet-cache", "type": "sync" },
+   { "source": "tweet-cache", "target": "tbird", "type": "sync" },
+   { "source": "timeline-svc", "target": "gizmoduck", "type": "sync" }
+  ],
+  "cache_hit_ratio": 0.95,
+  "key_ideas": [
+   "Fan-out on write makes reads cheap; inactive users (30+ days) are skipped",
+   "Redis lists hold only tweet IDs; bodies are joined in at read time",
+   "Each timeline lives on 3 Redis hosts and the fastest responder wins",
+   "Moving from a Rails monolith to JVM services on Finagle cut hosts ~10x",
+   "Ingest is decoupled through a queue so the write API acknowledges quickly"
+  ],
+  "sources": [
+   { "title": "The Architecture Twitter Uses to Deal with 150M Active Users, 300K QPS (HighScalability)", "url": "http://highscalability.com/blog/2013/7/8/the-architecture-twitter-uses-to-deal-with-150m-active-users.html" },
+   { "title": "Scaling Twitter (InfoQ, 2013)", "url": "https://www.infoq.com/news/2013/08/scaling-twitter" }
+  ]
+ },
+ {
+  "id": "amazon-checkout",
+  "company": "Amazon",
+  "product": "Retail cart & checkout (place order)",
+  "summary": "A checkout page is assembled by a renderer that calls many backend services, each bound by a 99.9th-percentile latency SLA. The shopping cart sits on Dynamo, which is designed so 'add to cart' writes are never refused, with conflicting versions merged on read. Placing an order writes to the order store and hands fulfilment off asynchronously through queues.",
+  "scale": { "peak_rps": 20000, "notes": "Estimate. Prime Day 2023 saw 375M+ items bought on day one, about 4.3k items/s on average, and the estimate allows for peaks plus cart and checkout calls. Platform-wide context from AWS: DynamoDB peaked at 126M req/s, SQS at 86M msg/s and CloudFront at over 500M HTTP requests/min. The Dynamo paper reports 3M+ checkouts/day in 2007. Replica counts are estimates." },
+  "latency_target_ms": 300,
+  "components": [
+   { "id": "shopper", "type": "User", "name": "Amazon.com shopper", "replicas": 1, "notes": "Views the cart and places an order" },
+   { "id": "cloudfront", "type": "CDN", "name": "Amazon CloudFront", "replicas": 400, "notes": "Static assets and dynamic acceleration; checkout calls are mostly uncacheable" },
+   { "id": "elb", "type": "LoadBalancer", "name": "Elastic Load Balancing", "replicas": 50, "notes": "Front door to the web tier (estimate)" },
+   { "id": "renderer", "type": "Server", "name": "Checkout page renderer", "replicas": 2000, "notes": "Aggregates responses from 150+ services per page" },
+   { "id": "cart-svc", "type": "Service", "name": "Shopping Cart service", "replicas": 500, "notes": "Always-writable cart that merges versions on read" },
+   { "id": "dynamo", "type": "Database", "name": "Dynamo / DynamoDB", "replicas": 300, "notes": "Leaderless store, typical (N,R,W)=(3,2,2), zero-hop routing" },
+   { "id": "order-svc", "type": "Service", "name": "Order & payment service", "replicas": 500, "notes": "Validates price, payment and inventory, then records the order (estimate)" },
+   { "id": "aurora", "type": "Database", "name": "Amazon Aurora", "replicas": 200, "notes": "Relational order data (placement estimated; 5,835 Aurora instances on Prime Day 2023)" },
+   { "id": "sqs", "type": "Queue", "name": "Amazon SQS", "replicas": 50, "notes": "Decouples order placement from fulfilment" },
+   { "id": "fulfilment", "type": "Worker", "name": "Fulfilment & notification workers", "replicas": 500, "notes": "Warehouse assignment, emails, etc. (estimate)" }
+  ],
+  "edges": [
+   { "source": "shopper", "target": "cloudfront", "type": "sync" },
+   { "source": "cloudfront", "target": "elb", "type": "sync" },
+   { "source": "elb", "target": "renderer", "type": "sync" },
+   { "source": "renderer", "target": "cart-svc", "type": "sync" },
+   { "source": "cart-svc", "target": "dynamo", "type": "sync" },
+   { "source": "renderer", "target": "order-svc", "type": "sync" },
+   { "source": "order-svc", "target": "aurora", "type": "sync" },
+   { "source": "order-svc", "target": "sqs", "type": "async" },
+   { "source": "sqs", "target": "fulfilment", "type": "async" }
+  ],
+  "cache_hit_ratio": 0.2,
+  "key_ideas": [
+   "SLAs are set at p99.9, not the mean, so heavy customers aren't penalised",
+   "The cart favours availability: writes always succeed and conflicts merge on read",
+   "Every downstream service gets a tighter latency budget than the page that calls it",
+   "Queues separate the customer-facing order write from slow fulfilment work"
+  ],
+  "sources": [
+   { "title": "Amazon's Dynamo (All Things Distributed)", "url": "https://www.allthingsdistributed.com/2007/10/amazons_dynamo.html" },
+   { "title": "Prime Day 2023 Powered by AWS: All the Numbers (AWS News Blog)", "url": "https://aws.amazon.com/blogs/aws/prime-day-2023-powered-by-aws-all-the-numbers" }
+  ]
+ },
+ {
+  "id": "airbnb",
+  "company": "Airbnb",
+  "product": "Listing search (retrieval + ranking)",
+  "summary": "A search goes to a root service that fans it out to sharded leaf services. Each leaf filters its slice of homes with an embedding-based retrieval step on a Lucene index, scores the survivors with a deep model, and checks live price and availability. The root merges the leaf results and runs a final setwise re-ranker. Listing embeddings are computed offline every day, so only the query embedding is calculated per request.",
+  "scale": { "peak_rps": 5000, "notes": "Estimate of a few thousand searches/s, based on traffic levels. The EBR paper says the system scores millions of homes per second, popular markets have about 100k eligible homes, and listings update at about 10k/s. Replica counts are estimates." },
+  "latency_target_ms": 400,
+  "components": [
+   { "id": "guest", "type": "User", "name": "Airbnb guest (web/app)", "replicas": 1, "notes": "Submits location, dates and filters" },
+   { "id": "lb", "type": "LoadBalancer", "name": "Edge load balancer", "replicas": 20, "notes": "Estimate" },
+   { "id": "api-gateway", "type": "APIGateway", "name": "API gateway / web frontend", "replicas": 200, "notes": "Auth and routing to the search backend (estimate)" },
+   { "id": "search-root", "type": "Service", "name": "Search Root Service", "replicas": 150, "notes": "Scatter-gather plus setwise re-ranking of the top results" },
+   { "id": "query-tower", "type": "Service", "name": "EBR query-tower inference", "replicas": 100, "notes": "Embeds the search query online (placement is an estimate)" },
+   { "id": "search-leaf", "type": "Service", "name": "Search Leaf Services (sharded)", "replicas": 600, "notes": "Retrieves the top K candidates, then runs the first-stage DNN to keep the top N" },
+   { "id": "listing-index", "type": "SearchIndex", "name": "Lucene listing index with IVF cluster IDs", "replicas": 600, "notes": "IVF clusters are applied as an ordinary filter alongside geo filters" },
+   { "id": "avail-cache", "type": "Cache", "name": "Precomputed availability & pricing", "replicas": 100, "notes": "Near-real-time structure used as an accuracy post-filter" },
+   { "id": "listing-db", "type": "Database", "name": "Listing source-of-truth database", "replicas": 50, "notes": "Backs the availability and pricing data (estimate)" }
+  ],
+  "edges": [
+   { "source": "guest", "target": "lb", "type": "sync" },
+   { "source": "lb", "target": "api-gateway", "type": "sync" },
+   { "source": "api-gateway", "target": "search-root", "type": "sync" },
+   { "source": "search-root", "target": "query-tower", "type": "sync" },
+   { "source": "search-root", "target": "search-leaf", "type": "sync" },
+   { "source": "search-leaf", "target": "listing-index", "type": "sync" },
+   { "source": "search-leaf", "target": "avail-cache", "type": "sync" },
+   { "source": "avail-cache", "target": "listing-db", "type": "sync" }
+  ],
+  "cache_hit_ratio": 0.9,
+  "key_ideas": [
+   "A multi-stage funnel where each stage scores about 10x fewer listings than the one before",
+   "Two-tower model: listing vectors are built offline, so online cost doesn't grow with inventory",
+   "IVF was chosen over HNSW because it handles constant price/availability updates and heavy geo filtering",
+   "Euclidean distance gave balanced clusters, reaching 98% recall@100 at 16 probes",
+   "Stale day-old features are corrected by a live price and availability check before results return"
+  ],
+  "sources": [
+   { "title": "Applying Embedding-Based Retrieval to Airbnb Search (arXiv 2601.06873)", "url": "https://arxiv.org/html/2601.06873v1" },
+   { "title": "Embedding-Based Retrieval for Airbnb Search (Airbnb Tech Blog)", "url": "https://airbnb.tech/ai-ml/embedding-based-retrieval-for-airbnb-search/" }
+  ]
+ },
+ {
+  "id": "spotify",
+  "company": "Spotify",
+  "product": "Track playback start",
+  "summary": "When a user hits play, the client asks Spotify's backend, which runs largely as microservices on Google Cloud, for track metadata and a location for the encrypted audio file. The audio bytes come from a multi-CDN setup in front of object storage. Playback events are published to Cloud Pub/Sub for downstream processing.",
+  "scale": { "peak_rps": 60000, "notes": "Estimate: a few billion plays a day gives ~30k/s average, with about a 2x peak. Sources give 230M+ MAU and 50M+ tracks (2020), and Pub/Sub at hundreds of thousands of messages/s (2016). A 2010 Spotify paper reported a median playback latency of about 265 ms; I didn't open it, so it isn't cited. Replica counts are estimates." },
+  "latency_target_ms": 250,
+  "components": [
+   { "id": "listener", "type": "User", "name": "Spotify client", "replicas": 1, "notes": "Requests a track, then fetches the encrypted audio by byte range" },
+   { "id": "lb", "type": "LoadBalancer", "name": "Google Cloud load balancer", "replicas": 20, "notes": "Estimate" },
+   { "id": "access-point", "type": "APIGateway", "name": "Client access point / edge gateway", "replicas": 300, "notes": "Long-lived client connection that routes requests to backend services (estimate name)" },
+   { "id": "metadata-svc", "type": "Service", "name": "Track metadata service", "replicas": 300, "notes": "Returns track, album and rights info (estimate)" },
+   { "id": "metadata-db", "type": "Database", "name": "Cassandra / Cloud Bigtable", "replicas": 200, "notes": "Spotify's main NoSQL stores (role in this path is an estimate)" },
+   { "id": "resolve-svc", "type": "Service", "name": "Audio file resolver", "replicas": 200, "notes": "Maps a track to file IDs and CDN URLs (estimate name)" },
+   { "id": "cdn", "type": "CDN", "name": "Multi-CDN (Akamai, AWS, Fastly)", "replicas": 500, "notes": "Low-latency, high-bandwidth audio delivery" },
+   { "id": "origin", "type": "BlobStorage", "name": "Audio object storage (GCS)", "replicas": 10, "notes": "Origin for encoded audio files (estimate)" },
+   { "id": "pubsub", "type": "Queue", "name": "Cloud Pub/Sub", "replicas": 20, "notes": "Event delivery for playback and other client events" },
+   { "id": "event-worker", "type": "Worker", "name": "Cloud Dataflow pipelines", "replicas": 100, "notes": "Stream/batch processing of play events" }
+  ],
+  "edges": [
+   { "source": "listener", "target": "lb", "type": "sync" },
+   { "source": "lb", "target": "access-point", "type": "sync" },
+   { "source": "access-point", "target": "metadata-svc", "type": "sync" },
+   { "source": "metadata-svc", "target": "metadata-db", "type": "sync" },
+   { "source": "access-point", "target": "resolve-svc", "type": "sync" },
+   { "source": "access-point", "target": "pubsub", "type": "async" },
+   { "source": "pubsub", "target": "event-worker", "type": "async" },
+   { "source": "listener", "target": "cdn", "type": "sync" },
+   { "source": "cdn", "target": "origin", "type": "sync" }
+  ],
+  "cache_hit_ratio": 0.95,
+  "key_ideas": [
+   "Audio bytes are offloaded to several CDNs; the backend only resolves where to fetch",
+   "Clients prefetch and cache locally, so many plays start without a network round trip",
+   "Backend is decomposed into many small services on GCP with managed storage",
+   "Event logging goes through Pub/Sub, keeping analytics off the playback critical path"
+  ],
+  "sources": [
+   { "title": "How Spotify Aligned CDN Services for a Lightning Fast Streaming Experience (Spotify Engineering)", "url": "https://engineering.atspotify.com/2020/2/how-spotify-aligned-cdn-services-for-a-lightning-fast-streaming-experience" },
+   { "title": "Spotify chooses Google Cloud Platform to power data infrastructure (Google Cloud Blog)", "url": "https://cloud.google.com/blog/products/gcp/spotify-chooses-google-cloud-platform-to-power-data-infrastructure/" }
+  ]
+ },
+ {
+  "id": "discord",
+  "company": "Discord",
+  "product": "Message send and guild fan-out",
+  "summary": "A message is posted to the Python API monolith, which persists it through Rust data services into ScyllaDB and hands it to the guild's Elixir process. Each guild process knows every connected session in that server and publishes the event to all of them, using Manifold to batch sends per remote node. Session processes then push the event down each client's WebSocket.",
+  "scale": { "peak_rps": 100000, "notes": "Estimate for message sends/s. Sources: nearly 5M concurrent users and millions of fan-out events/s (2017), up to 500k sessions per VM, and a messages cluster of 72 ScyllaDB nodes holding trillions of messages (2022). Replica counts other than ScyllaDB are estimates." },
+  "latency_target_ms": 100,
+  "components": [
+   { "id": "user", "type": "User", "name": "Discord client", "replicas": 1, "notes": "Sends via HTTP API; receives events over WebSocket" },
+   { "id": "lb", "type": "LoadBalancer", "name": "Edge load balancer", "replicas": 20, "notes": "Estimate" },
+   { "id": "api", "type": "Server", "name": "API monolith (Python)", "replicas": 1000, "notes": "Validates, assigns a Snowflake ID, persists and publishes" },
+   { "id": "data-svc", "type": "Service", "name": "Rust data services", "replicas": 200, "notes": "gRPC per query; routed by channel ID hash; coalesces duplicate reads" },
+   { "id": "scylla", "type": "Database", "name": "ScyllaDB messages cluster", "replicas": 72, "notes": "Partitioned by channel and time bucket; insert p99 about 5 ms" },
+   { "id": "guild", "type": "Service", "name": "Elixir guild processes (+ Manifold)", "replicas": 300, "notes": "One process per guild, located via a consistent-hash ring held in FastGlobal" },
+   { "id": "gateway", "type": "WebSocketServer", "name": "Elixir gateway session processes", "replicas": 400, "notes": "One session process per connection; up to ~500k per VM" }
+  ],
+  "edges": [
+   { "source": "user", "target": "lb", "type": "sync" },
+   { "source": "lb", "target": "api", "type": "sync" },
+   { "source": "api", "target": "data-svc", "type": "sync" },
+   { "source": "data-svc", "target": "scylla", "type": "sync" },
+   { "source": "api", "target": "guild", "type": "sync" },
+   { "source": "guild", "target": "gateway", "type": "async" }
+  ],
+  "cache_hit_ratio": 0,
+  "key_ideas": [
+   "Each guild is a single BEAM process acting as the pub/sub hub for its members",
+   "Manifold sends once per remote node, then fans out locally across cores",
+   "The ring is kept in read-only shared memory (FastGlobal), so lookups take about 0.3 µs",
+   "Semaphores make sessions fail fast instead of stampeding guild registries",
+   "Rust data services with request coalescing shield ScyllaDB from hot partitions"
+  ],
+  "sources": [
+   { "title": "How Discord Scaled Elixir to 5,000,000 Concurrent Users", "url": "https://discord.com/blog/how-discord-scaled-elixir-to-5-000-000-concurrent-users" },
+   { "title": "How Discord Stores Trillions of Messages", "url": "https://discord.com/blog/how-discord-stores-trillions-of-messages" }
+  ]
+ },
+ {
+  "id": "slack",
+  "company": "Slack",
+  "product": "Channel message send and real-time delivery",
+  "summary": "A client posts a message to the Hack webapp, which saves it and hands it to a stateless Admin Server. The Admin Server uses a consistent-hash ring to find the stateful Channel Server that owns the channel. That Channel Server pushes the message to every subscribed Gateway Server worldwide, and each Gateway forwards it over WebSockets to connected clients.",
+  "scale": { "peak_rps": 20000, "notes": "Estimate for message/event sends per second. Sources give tens of millions of connected clients, ~16M channels per Channel Server host at peak, ~500 ms global delivery, and Flannel peaks of 4M connections and 600K client queries/s. Message persistence store and job queue are general knowledge (estimate). Replica counts are estimates." },
+  "latency_target_ms": 500,
+  "components": [
+   { "id": "user", "type": "User", "name": "Slack client", "replicas": 1, "notes": "Sends via the API and receives events on its WebSocket" },
+   { "id": "envoy", "type": "LoadBalancer", "name": "Envoy edge", "replicas": 100, "notes": "TLS termination and load balancing in edge regions" },
+   { "id": "webapp", "type": "Server", "name": "Webapp (Hack)", "replicas": 2000, "notes": "Public API; persists the message and calls the real-time tier" },
+   { "id": "msg-db", "type": "Database", "name": "Vitess / MySQL", "replicas": 300, "notes": "Message persistence (general knowledge, estimate)" },
+   { "id": "admin", "type": "Service", "name": "Admin Servers", "replicas": 100, "notes": "Stateless bridge that finds the owning Channel Server via the ring in Consul" },
+   { "id": "channel", "type": "Service", "name": "Channel Servers (Java)", "replicas": 200, "notes": "Stateful, consistent-hashed by channel ID; replaced within about 20 s by CHARMs" },
+   { "id": "gateway", "type": "WebSocketServer", "name": "Gateway Servers (Java)", "replicas": 500, "notes": "Multi-region, holds user subscriptions and pushes events to clients" },
+   { "id": "job-queue", "type": "Queue", "name": "Async job queue", "replicas": 30, "notes": "Deferred work such as notifications and indexing (estimate)" },
+   { "id": "job-worker", "type": "Worker", "name": "Job workers", "replicas": 500, "notes": "Consume deferred jobs (estimate)" }
+  ],
+  "edges": [
+   { "source": "user", "target": "envoy", "type": "sync" },
+   { "source": "envoy", "target": "webapp", "type": "sync" },
+   { "source": "webapp", "target": "msg-db", "type": "sync" },
+   { "source": "webapp", "target": "admin", "type": "sync" },
+   { "source": "admin", "target": "channel", "type": "sync" },
+   { "source": "channel", "target": "gateway", "type": "async" },
+   { "source": "webapp", "target": "job-queue", "type": "async" },
+   { "source": "job-queue", "target": "job-worker", "type": "async" }
+  ],
+  "cache_hit_ratio": 0,
+  "key_ideas": [
+   "Channels are sharded onto in-memory Channel Servers by a consistent-hash ring",
+   "Gateway Servers are the only multi-region tier; a failed region drains users to the nearest healthy one",
+   "Pub/sub from channel to gateways means each message crosses the WAN once per gateway, not once per user",
+   "Typing indicators and other transient events take the same path without being persisted",
+   "Flannel, an edge cache, trims client boot payloads (7x to 44x smaller) and absorbs query load"
+  ],
+  "sources": [
+   { "title": "Real-time Messaging (Slack Engineering)", "url": "https://slack.engineering/real-time-messaging/" },
+   { "title": "Flannel: An Application-Level Edge Cache to Make Slack Scale (Slack Engineering)", "url": "https://slack.engineering/flannel-an-application-level-edge-cache-to-make-slack-scale/" }
+  ]
+ },
+ {
+  "id": "stripe",
+  "company": "Stripe",
+  "product": "Payment API charge (create PaymentIntent / charge)",
+  "summary": "A merchant's POST passes through Stripe's API tier, where Redis-backed token-bucket limiters and load shedders protect capacity. Requests carry an idempotency key so retries never double-charge. The payments service stores state in DocDB, Stripe's sharded MongoDB-based database: Go proxies route each query to the right shard using a chunk metadata service. The charge is authorised with external card networks, and every database write streams as change events to Kafka for downstream consumers.",
+  "scale": { "peak_rps": 5000, "notes": "Estimate for charge-path API requests at peak, such as Black Friday. Sources: DocDB serves over 5M queries/s across 2,000+ shards with 99.999% uptime, and Stripe processed $1T in payment volume in 2023. Replica counts are estimates." },
+  "latency_target_ms": 800,
+  "components": [
+   { "id": "merchant", "type": "User", "name": "Merchant server / Stripe.js", "replicas": 1, "notes": "Sends POST with an Idempotency-Key and retries with jittered exponential backoff" },
+   { "id": "lb", "type": "LoadBalancer", "name": "Edge load balancer", "replicas": 30, "notes": "Estimate" },
+   { "id": "api", "type": "APIGateway", "name": "Stripe API front end", "replicas": 500, "notes": "Auth, routing and middleware stack" },
+   { "id": "ratelimiter", "type": "RateLimiter", "name": "Token-bucket limiters + load shedders (Redis)", "replicas": 30, "notes": "Per-user rate and concurrency caps; sheds non-critical and test-mode traffic first; fails open" },
+   { "id": "payments", "type": "Service", "name": "Charge / payments service", "replicas": 800, "notes": "Idempotent: resumes, re-runs or replays a stored result on retry" },
+   { "id": "docdb-proxy", "type": "ReverseProxy", "name": "DocDB database proxy (Go)", "replicas": 300, "notes": "Admission control, query parsing, shard routing and result merge" },
+   { "id": "chunk-metadata", "type": "Service", "name": "Chunk metadata service", "replicas": 20, "notes": "Maps data chunks to shards" },
+   { "id": "docdb", "type": "Database", "name": "DocDB (MongoDB replica-set shards)", "replicas": 2000, "notes": "Primary plus secondaries per shard, with automatic failover" },
+   { "id": "card-network", "type": "ThirdPartyAPI", "name": "Card networks / issuing banks", "replicas": 1, "notes": "External authorisation; dominates charge latency" },
+   { "id": "kafka", "type": "Queue", "name": "Kafka (CDC from shard oplogs)", "replicas": 50, "notes": "Change events, also archived to S3" },
+   { "id": "cdc-consumers", "type": "Worker", "name": "Downstream consumers", "replicas": 200, "notes": "Webhooks, ledger and analytics (estimate)" }
+  ],
+  "edges": [
+   { "source": "merchant", "target": "lb", "type": "sync" },
+   { "source": "lb", "target": "api", "type": "sync" },
+   { "source": "api", "target": "ratelimiter", "type": "sync" },
+   { "source": "ratelimiter", "target": "payments", "type": "sync" },
+   { "source": "payments", "target": "docdb-proxy", "type": "sync" },
+   { "source": "docdb-proxy", "target": "chunk-metadata", "type": "sync" },
+   { "source": "docdb-proxy", "target": "docdb", "type": "sync" },
+   { "source": "payments", "target": "card-network", "type": "sync" },
+   { "source": "docdb", "target": "kafka", "type": "async" },
+   { "source": "kafka", "target": "cdc-consumers", "type": "async" }
+  ],
+  "cache_hit_ratio": 0,
+  "key_ideas": [
+   "Idempotency keys make every POST safe to retry: replay the stored result, resume, or re-run",
+   "Layered protection: per-user rate limit, then concurrency limit, then fleet-wide load shedding by priority",
+   "A proxy fleet hides the 2,000+ shards and enforces admission control",
+   "Online chunk migration with a sub-2-second traffic switch allows reshards with zero downtime",
+   "CDC to Kafka keeps derived systems off the synchronous charge path"
+  ],
+  "sources": [
+   { "title": "Designing robust and predictable APIs with idempotency (Stripe)", "url": "https://stripe.com/blog/idempotency" },
+   { "title": "Scaling your API with rate limiters (Stripe)", "url": "https://stripe.com/blog/rate-limiters" },
+   { "title": "How Stripe's document databases supported 99.999% uptime with zero-downtime data migrations", "url": "https://stripe.dev/blog/how-stripes-document-databases-supported-99.999-uptime-with-zero-downtime-data-migrations" }
+  ]
+ }
+]

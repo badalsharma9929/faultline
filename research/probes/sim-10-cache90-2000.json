@@ -1,0 +1,302 @@
+{
+  "url": "/simulate",
+  "status": 200,
+  "request": {
+    "graph": {
+      "nodes": [
+        {
+          "id": "User-1",
+          "type": "User",
+          "x": 0,
+          "y": 0,
+          "position": {
+            "x": 0,
+            "y": 0
+          },
+          "config": {
+            "number_of_users": 2000,
+            "requests_per_user": 1,
+            "name": "User",
+            "description": "",
+            "basic": {
+              "number_of_users": 2000,
+              "requests_per_user": 1
+            },
+            "advanced": {}
+          }
+        },
+        {
+          "id": "LoadBalancer-2",
+          "type": "LoadBalancer",
+          "x": 200,
+          "y": 0,
+          "position": {
+            "x": 200,
+            "y": 0
+          },
+          "config": {
+            "capacity": 50000,
+            "base_latency": 20,
+            "replicas": 2,
+            "algorithm": "round_robin",
+            "health_check_interval": 10,
+            "sticky_sessions": false,
+            "connection_draining": true,
+            "draining_timeout_sec": 30,
+            "name": "Load Balancer",
+            "description": "",
+            "basic": {
+              "capacity": 50000,
+              "base_latency": 20
+            },
+            "advanced": {
+              "replicas": 2,
+              "algorithm": "round_robin",
+              "health_check_interval": 10,
+              "sticky_sessions": false,
+              "connection_draining": true,
+              "draining_timeout_sec": 30
+            }
+          }
+        },
+        {
+          "id": "Service-3",
+          "type": "Service",
+          "x": 400,
+          "y": 0,
+          "position": {
+            "x": 400,
+            "y": 0
+          },
+          "config": {
+            "capacity": 1000,
+            "base_latency": 22,
+            "replicas": 3,
+            "timeout_ms": 3000,
+            "circuit_breaker": false,
+            "cb_failure_threshold": 5,
+            "cb_recovery_sec": 30,
+            "retry_limit": 2,
+            "retry_backoff": "exponential",
+            "name": "Service",
+            "description": "",
+            "basic": {
+              "capacity": 1000,
+              "base_latency": 22
+            },
+            "advanced": {
+              "replicas": 3,
+              "timeout_ms": 3000,
+              "circuit_breaker": false,
+              "cb_failure_threshold": 5,
+              "cb_recovery_sec": 30,
+              "retry_limit": 2,
+              "retry_backoff": "exponential"
+            }
+          }
+        },
+        {
+          "id": "Database-4",
+          "type": "Database",
+          "x": 600,
+          "y": 0,
+          "position": {
+            "x": 600,
+            "y": 0
+          },
+          "config": {
+            "capacity": 2000,
+            "base_latency": 80,
+            "db_type": "SQL",
+            "replicas": 1,
+            "read_ratio": 80,
+            "shards": 1,
+            "sharding_strategy": "hash",
+            "connection_pool_size": 20,
+            "index_enabled": true,
+            "replication_mode": "async",
+            "point_in_time_recovery": false,
+            "name": "Database",
+            "description": "",
+            "basic": {
+              "capacity": 2000,
+              "base_latency": 80
+            },
+            "advanced": {
+              "db_type": "SQL",
+              "replicas": 1,
+              "read_ratio": 80,
+              "shards": 1,
+              "sharding_strategy": "hash",
+              "connection_pool_size": 20,
+              "index_enabled": true,
+              "replication_mode": "async",
+              "point_in_time_recovery": false
+            }
+          }
+        },
+        {
+          "id": "Cache-5",
+          "type": "Cache",
+          "x": 500,
+          "y": 0,
+          "position": {
+            "x": 500,
+            "y": 0
+          },
+          "config": {
+            "capacity": 50000,
+            "base_latency": 5,
+            "request_coalescing": false,
+            "eviction_policy": "LRU",
+            "max_memory_mb": 512,
+            "ttl_seconds": 300,
+            "hit_ratio": 0.9,
+            "cluster_mode": false,
+            "replicas": 1,
+            "persistence": false,
+            "name": "Cache",
+            "description": "",
+            "basic": {
+              "capacity": 50000,
+              "base_latency": 5
+            },
+            "advanced": {
+              "request_coalescing": false,
+              "eviction_policy": "LRU",
+              "max_memory_mb": 512,
+              "ttl_seconds": 300,
+              "hit_ratio": 0.9,
+              "cluster_mode": false,
+              "replicas": 1,
+              "persistence": false
+            }
+          }
+        }
+      ],
+      "edges": [
+        {
+          "source": "User-1",
+          "target": "LoadBalancer-2",
+          "connection_type": "sync",
+          "direction": "single"
+        },
+        {
+          "source": "LoadBalancer-2",
+          "target": "Service-3",
+          "connection_type": "sync",
+          "direction": "single"
+        },
+        {
+          "source": "Service-3",
+          "target": "Cache-5",
+          "connection_type": "sync",
+          "direction": "single"
+        },
+        {
+          "source": "Cache-5",
+          "target": "Database-4",
+          "connection_type": "sync",
+          "direction": "single"
+        }
+      ]
+    },
+    "mode": "practice",
+    "traffic_profile": null,
+    "hints_used": 0
+  },
+  "response": {
+    "node_metrics": [
+      {
+        "component_id": "User-1",
+        "component_type": "User",
+        "incoming_rps": 2000,
+        "effective_rps": 2000,
+        "effective_capacity": 100,
+        "overflow": 0,
+        "utilization": 0,
+        "latency": 0,
+        "queue_delay_ms": 0,
+        "latency_p95_ms": 0,
+        "latency_p99_ms": 0,
+        "status": "healthy"
+      },
+      {
+        "component_id": "LoadBalancer-2",
+        "component_type": "LoadBalancer",
+        "incoming_rps": 2000,
+        "effective_rps": 2000,
+        "effective_capacity": 100000,
+        "overflow": 0,
+        "utilization": 0.02,
+        "latency": 20,
+        "queue_delay_ms": 0,
+        "latency_p95_ms": 20.007,
+        "latency_p99_ms": 20.014,
+        "status": "healthy",
+        "replicas": 2
+      },
+      {
+        "component_id": "Service-3",
+        "component_type": "Service",
+        "incoming_rps": 2000,
+        "effective_rps": 2000,
+        "effective_capacity": 3000,
+        "overflow": 0,
+        "utilization": 0.667,
+        "latency": 22.014,
+        "queue_delay_ms": 0.014,
+        "latency_p95_ms": 30.82,
+        "latency_p99_ms": 39.625,
+        "status": "healthy",
+        "replicas": 3
+      },
+      {
+        "component_id": "Cache-5",
+        "component_type": "Cache",
+        "incoming_rps": 2000,
+        "effective_rps": 2000,
+        "effective_capacity": 50000,
+        "overflow": 0,
+        "utilization": 0.04,
+        "latency": 5,
+        "queue_delay_ms": 0,
+        "latency_p95_ms": 5.007,
+        "latency_p99_ms": 5.014,
+        "status": "healthy"
+      },
+      {
+        "component_id": "Database-4",
+        "component_type": "Database",
+        "incoming_rps": 200,
+        "effective_rps": 200,
+        "effective_capacity": 2000,
+        "overflow": 0,
+        "utilization": 0.1,
+        "latency": 80,
+        "queue_delay_ms": 0,
+        "latency_p95_ms": 80.72,
+        "latency_p99_ms": 81.44,
+        "status": "healthy"
+      }
+    ],
+    "performance": {
+      "incoming_rps": 2000,
+      "throughput": 2000,
+      "error_rate": 0,
+      "total_latency": 55.014,
+      "system_status": "healthy",
+      "bottleneck_node_id": null,
+      "first_failure_node": "Service-3",
+      "first_failure_rps": 3000,
+      "capacity_headroom": 1.5,
+      "async_backlog_rps": 0
+    },
+    "score": {
+      "total": 46,
+      "grade": "D",
+      "arch_pts": 22,
+      "sim_pts": 24
+    }
+  }
+}

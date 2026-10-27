@@ -1,0 +1,242 @@
+{
+  "defaults": {
+    "User": {
+      "name": "User",
+      "basic": {
+        "number_of_users": 100,
+        "requests_per_user": 1
+      },
+      "advanced": {}
+    },
+    "CDN": {
+      "name": "CDN",
+      "basic": {
+        "capacity": 100000,
+        "base_latency": 4
+      },
+      "advanced": {
+        "cache_api_responses": false,
+        "cache_hit_ratio": 0.9,
+        "ttl_seconds": 86400,
+        "https_termination": true,
+        "ddos_protection": false,
+        "geo_routing": false
+      }
+    },
+    "LoadBalancer": {
+      "name": "Load Balancer",
+      "basic": {
+        "capacity": 50000,
+        "base_latency": 20
+      },
+      "advanced": {
+        "replicas": 2,
+        "algorithm": "round_robin",
+        "health_check_interval": 10,
+        "sticky_sessions": false,
+        "connection_draining": true,
+        "draining_timeout_sec": 30
+      }
+    },
+    "Server": {
+      "name": "Server",
+      "basic": {
+        "capacity": 1000,
+        "base_latency": 50
+      },
+      "advanced": {
+        "replicas": 1,
+        "cpu_cores": 2,
+        "autoscaling": false,
+        "autoscale_min": 1,
+        "autoscale_max": 10,
+        "graceful_shutdown": true,
+        "timeout_ms": 3000
+      }
+    },
+    "Cache": {
+      "name": "Cache",
+      "basic": {
+        "capacity": 50000,
+        "base_latency": 5
+      },
+      "advanced": {
+        "request_coalescing": false,
+        "eviction_policy": "LRU",
+        "max_memory_mb": 512,
+        "ttl_seconds": 300,
+        "hit_ratio": 0.8,
+        "cluster_mode": false,
+        "replicas": 1,
+        "persistence": false
+      }
+    },
+    "Database": {
+      "name": "Database",
+      "basic": {
+        "capacity": 2000,
+        "base_latency": 80
+      },
+      "advanced": {
+        "db_type": "SQL",
+        "replicas": 1,
+        "read_ratio": 80,
+        "shards": 1,
+        "sharding_strategy": "hash",
+        "connection_pool_size": 20,
+        "index_enabled": true,
+        "replication_mode": "async",
+        "point_in_time_recovery": false
+      }
+    },
+    "BlobStorage": {
+      "name": "Blob Storage",
+      "basic": {
+        "capacity": 5000,
+        "base_latency": 30
+      },
+      "advanced": {
+        "max_object_size_mb": 100,
+        "replication_factor": 3,
+        "storage_class": "standard",
+        "versioning": false,
+        "lifecycle_policy_days": 0,
+        "cdn_integration": false
+      }
+    },
+    "SearchIndex": {
+      "name": "Search Index",
+      "basic": {
+        "capacity": 5000,
+        "base_latency": 12
+      },
+      "advanced": {
+        "index_type": "inverted",
+        "replicas": 1,
+        "shards": 1,
+        "refresh_interval_sec": 1,
+        "fuzzy_search": false,
+        "analyzer": "standard"
+      }
+    },
+    "Queue": {
+      "name": "Queue",
+      "basic": {
+        "capacity": 20000,
+        "base_latency": 30
+      },
+      "advanced": {
+        "max_queue_size": 10000,
+        "delivery": "at_least_once",
+        "visibility_timeout_sec": 30,
+        "retention_hours": 24,
+        "dlq_enabled": true,
+        "dlq_max_retries": 3,
+        "ordering": "best_effort"
+      }
+    },
+    "Worker": {
+      "name": "Worker",
+      "basic": {
+        "capacity": 500,
+        "base_latency": 25
+      },
+      "advanced": {
+        "idempotent": false,
+        "replicas": 1,
+        "concurrency": 4,
+        "retry_limit": 3,
+        "retry_backoff": "exponential",
+        "timeout_ms": 30000,
+        "autoscaling": false,
+        "autoscale_min": 1,
+        "autoscale_max": 20
+      }
+    },
+    "RateLimiter": {
+      "name": "Rate Limiter",
+      "basic": {
+        "capacity": 50000,
+        "base_latency": 8
+      },
+      "advanced": {
+        "algorithm": "token_bucket",
+        "window_seconds": 60,
+        "max_tokens": 100,
+        "scope": "per_user",
+        "storage_backend": "redis",
+        "burst_multiplier": 1.5,
+        "reject_status_code": 429
+      }
+    },
+    "Service": {
+      "name": "Service",
+      "basic": {
+        "capacity": 1000,
+        "base_latency": 22
+      },
+      "advanced": {
+        "replicas": 1,
+        "timeout_ms": 3000,
+        "circuit_breaker": false,
+        "cb_failure_threshold": 5,
+        "cb_recovery_sec": 30,
+        "retry_limit": 2,
+        "retry_backoff": "exponential"
+      }
+    },
+    "APIGateway": {
+      "name": "API Gateway",
+      "basic": {
+        "capacity": 20000,
+        "base_latency": 8
+      },
+      "advanced": {
+        "auth_enabled": false,
+        "rate_limiting": false,
+        "https_enabled": false,
+        "request_aggregation": false
+      }
+    },
+    "ReverseProxy": {
+      "name": "Reverse Proxy",
+      "basic": {
+        "capacity": 30000,
+        "base_latency": 3
+      },
+      "advanced": {
+        "https_termination": false,
+        "compression": false,
+        "static_file_serving": false,
+        "ddos_protection": false
+      }
+    },
+    "WebSocketServer": {
+      "name": "WebSocket Server",
+      "basic": {
+        "capacity": 10000,
+        "base_latency": 5
+      },
+      "advanced": {
+        "auth_enabled": false,
+        "https_enabled": false,
+        "heartbeat_interval": 30,
+        "replicas": 1
+      }
+    },
+    "ThirdPartyAPI": {
+      "name": "",
+      "basic": {
+        "api_type": "payment",
+        "capacity": 100,
+        "base_latency": 200
+      },
+      "advanced": {
+        "timeout_ms": 5000,
+        "circuit_breaker": false,
+        "retry_limit": 2,
+        "cache_responses": false
+      }
+    }
+  }
+}
